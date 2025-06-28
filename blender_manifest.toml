@@ -1,0 +1,10 @@
+schema_version = "1.0.0"
+id = "Merge_selected_cameras"
+version = "1.0.0"
+name = "Merge Selected Cameras"
+tagline = "Create one animated camera from your photogrammetry sequence"
+maintainer = "Naoki Korematsu" 
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Camera", "Tracking", "3D View"]
