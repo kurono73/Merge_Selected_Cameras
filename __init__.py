@@ -25,12 +25,12 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
     )
     camera_name_custom: bpy.props.StringProperty(
         name="Custom Camera Name",
-        description="Custom name for the merged camera if not using input sequence name", # Description updated
+        description="Custom name for the merged camera if not using input sequence name",
         default="MergedCamera",
     )
     camera_name_use_derived: bpy.props.BoolProperty(
-        name="Input sequence name", # Label changed in Scene Property definition
-        description="If checked, the merged camera name will be derived from the input camera sequence's base name. Otherwise, the custom name below is used.", # Description updated
+        name="Input sequence name",
+        description="If checked, the merged camera name will be derived from the input camera sequence's base name. Otherwise, the custom name below is used.",
         default=False,
     )
 
@@ -60,8 +60,6 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
                 self.report({'WARNING'}, "Active camera name does not match expected pattern.")
                 return {'CANCELLED'}
             base_name_for_glob = base_name_match_for_auto_detect.group(1)
-            if not base_name_for_glob and not base_name_match_for_auto_detect.group(2):
-                 self.report({'INFO'}, f"Active camera name '{active_camera_obj.name}' suggests a simple numeric sequence.")
             camera_objects = [
                 obj for obj in bpy.data.objects
                 if obj.type == 'CAMERA' and re.match(fr'{re.escape(base_name_for_glob)}\d+(\.\w+)?$', obj.name)
@@ -74,27 +72,25 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
         sorted_camera_objects = sorted(camera_objects, key=lambda cam: natural_sort_key(cam.name))
 
         final_camera_name = ""
-        if self.camera_name_use_derived: # Corresponds to "Input sequence name" checkbox
+        if self.camera_name_use_derived:
             derived_base_name_from_sequence = ""
             if self.process_only_selected_cameras:
                 if sorted_camera_objects:
-                    reference_name = sorted_camera_objects[0].name
-                    match = re.match(r'(.*?)(\d+)(\.\w+)?$', reference_name)
-                    if match:
-                        derived_base_name_from_sequence = match.group(1)
+                    match = re.match(r'(.*?)(\d+)(\.\w+)?$', sorted_camera_objects[0].name)
+                    if match: derived_base_name_from_sequence = match.group(1)
             else:
                 if base_name_match_for_auto_detect:
                     derived_base_name_from_sequence = base_name_match_for_auto_detect.group(1)
             cleaned_derived_name = derived_base_name_from_sequence.rstrip(' _.-')
             if not cleaned_derived_name.strip():
                 final_camera_name = "MergedCamera"
-                self.report({'WARNING'}, "Could not derive name from sequence, using default 'MergedCamera'.")
+                self.report({'WARNING'}, "Could not derive name, using default 'MergedCamera'.")
             else:
                 final_camera_name = cleaned_derived_name
         else:
             if not self.camera_name_custom.strip():
                 final_camera_name = "MergedCamera"
-                self.report({'WARNING'}, "Custom camera name was blank, using default 'MergedCamera'.")
+                self.report({'WARNING'}, "Custom name was blank, using default 'MergedCamera'.")
             else:
                 final_camera_name = self.camera_name_custom
 
@@ -105,14 +101,12 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
         first_camera = sorted_camera_objects[0]
         animated_camera.data.sensor_width = first_camera.data.sensor_width
         animated_camera.data.sensor_height = first_camera.data.sensor_height
-        animated_camera.data.lens = first_camera.data.lens
-        animated_camera.data.shift_x = first_camera.data.shift_x
-        animated_camera.data.shift_y = first_camera.data.shift_y
 
         start_frame = scene.frame_start
         scene.frame_end = start_frame + len(sorted_camera_objects) - 1
-        lens_values, shift_x_values, shift_y_values = [], [], []
 
+        frames, lens_values, shift_x_values, shift_y_values = [], [], [], []
+        
         wm = context.window_manager
         total_cameras = len(sorted_camera_objects)
         if total_cameras > 0: wm.progress_begin(0, total_cameras)
@@ -120,44 +114,56 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
         for offset, cam in enumerate(sorted_camera_objects):
             if total_cameras > 0: wm.progress_update(offset)
             frame = start_frame + offset
-            scene.frame_set(frame)
+            
             animated_camera.location = cam.location
             animated_camera.rotation_euler = cam.rotation_euler
             animated_camera.keyframe_insert(data_path="location", frame=frame)
             animated_camera.keyframe_insert(data_path="rotation_euler", frame=frame)
-            animated_camera.data.lens = cam.data.lens
-            animated_camera.data.shift_x = cam.data.shift_x
-            animated_camera.data.shift_y = cam.data.shift_y
-            animated_camera.data.keyframe_insert(data_path="lens", frame=frame)
-            animated_camera.data.keyframe_insert(data_path="shift_x", frame=frame)
-            animated_camera.data.keyframe_insert(data_path="shift_y", frame=frame)
+
+            frames.append(frame)
             lens_values.append(cam.data.lens)
             shift_x_values.append(cam.data.shift_x)
             shift_y_values.append(cam.data.shift_y)
 
         if total_cameras > 0: wm.progress_end()
 
-        def remove_constant_keyframes_from_obj(obj_data, data_path, values_list):
-            if not obj_data.animation_data or not obj_data.animation_data.action: return
-            if not values_list: return
-            is_constant = True
-            if len(values_list) > 1:
-                first_val = values_list[0]
-                for v in values_list[1:]:
-                    if not isclose(v, first_val, abs_tol=1e-4): is_constant = False; break
-            if is_constant:
-                fcurve = obj_data.animation_data.action.fcurves.find(data_path)
-                if fcurve: obj_data.animation_data.action.fcurves.remove(fcurve)
+        def clear_camera_data_keyframes(camera):
+            if camera and camera.data and camera.data.animation_data:
+                camera.data.animation_data_clear()
 
-        if animated_camera.data:
-            remove_constant_keyframes_from_obj(animated_camera.data, "lens", lens_values)
-            remove_constant_keyframes_from_obj(animated_camera.data, "shift_x", shift_x_values)
-            remove_constant_keyframes_from_obj(animated_camera.data, "shift_y", shift_y_values)
+        def rebuild_keyframes_if_needed(camera, frames_list, lens_vals, shift_x_vals, shift_y_vals):
+            if not all([camera, camera.data, frames_list, lens_vals, shift_x_vals, shift_y_vals]):
+                return 
 
+            clear_camera_data_keyframes(camera)
+
+            if len(lens_vals) > 1 and not all(isclose(v, lens_vals[0], abs_tol=1e-4) for v in lens_vals):
+                for frame, value in zip(frames_list, lens_vals):
+                    camera.data.lens = value
+                    camera.data.keyframe_insert(data_path="lens", frame=frame)
+            else:
+                camera.data.lens = lens_vals[0] 
+
+            if len(shift_x_vals) > 1 and not all(isclose(v, shift_x_vals[0], abs_tol=1e-4) for v in shift_x_vals):
+                for frame, value in zip(frames_list, shift_x_vals):
+                    camera.data.shift_x = value
+                    camera.data.keyframe_insert(data_path="shift_x", frame=frame)
+            else:
+                camera.data.shift_x = shift_x_vals[0]
+
+            if len(shift_y_vals) > 1 and not all(isclose(v, shift_y_vals[0], abs_tol=1e-4) for v in shift_y_vals):
+                for frame, value in zip(frames_list, shift_y_vals):
+                    camera.data.shift_y = value
+                    camera.data.keyframe_insert(data_path="shift_y", frame=frame)
+            else:
+                camera.data.shift_y = shift_y_vals[0]
+
+        rebuild_keyframes_if_needed(animated_camera, frames, lens_values, shift_x_values, shift_y_values)
+        
         if self.delete_original_cameras:
-            deleted_cam_names = [cam.name for cam in sorted_camera_objects]
             bpy.data.batch_remove(sorted_camera_objects)
-            self.report({'INFO'}, f"Original cameras deleted: {', '.join(deleted_cam_names)}")
+            # self.report({'INFO'}, f"Original cameras deleted: {', '.join(deleted_cam_names)}") # ★ 削除しました
+
         self.report({'INFO'}, f"Cameras merged into '{animated_camera.name}'.")
         return {'FINISHED'}
 
@@ -230,32 +236,24 @@ class MergeCamerasPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-
         main_merge_box = layout.box()
-        main_merge_box.label(text="1. Merge Sequential Cameras") # Label changed
-
+        main_merge_box.label(text="1. Merge Sequential Cameras")
         source_options_box = main_merge_box.box()
         source_options_box.label(text="Options:")
         source_options_box.prop(scene, "process_only_selected_cameras")
         source_options_box.prop(scene, "delete_original_cameras")
-
         naming_options_box = main_merge_box.box()
         naming_options_box.label(text="Camera Naming:")
-        naming_options_box.prop(scene, "merged_camera_name_use_derived") # Label comes from property's 'name'
-
+        naming_options_box.prop(scene, "merged_camera_name_use_derived")
         row = naming_options_box.row(align=True)
         row.active = not scene.merged_camera_name_use_derived
         row.prop(scene, "merged_camera_name_custom", text="Name")
-
         op_merge = main_merge_box.operator(MergeSelectedCamerasOperator.bl_idname, icon='OUTLINER_OB_CAMERA')
-        
         op_merge.delete_original_cameras = scene.delete_original_cameras
         op_merge.process_only_selected_cameras = scene.process_only_selected_cameras
         op_merge.camera_name_custom = scene.merged_camera_name_custom
         op_merge.camera_name_use_derived = scene.merged_camera_name_use_derived
-
         layout.separator()
-
         box_bg = layout.box()
         box_bg.label(text="2. Background Image Setup")
         box_bg.prop(scene, "movieclip_selected", text="")
@@ -265,30 +263,29 @@ def register():
     bpy.utils.register_class(MergeSelectedCamerasOperator)
     bpy.utils.register_class(SetBackgroundOperator)
     bpy.utils.register_class(MergeCamerasPanel)
-
     bpy.types.Scene.delete_original_cameras = bpy.props.BoolProperty(
         name="Delete Original Cameras",
         description="Remove original cameras after merging",
         default=True,
     )
     bpy.types.Scene.process_only_selected_cameras = bpy.props.BoolProperty(
-        name="Selected cameras only", 
+        name="Selected cameras only",
         description="If checked, process only manually selected cameras. If unchecked, auto-detect cameras by name from the active camera",
         default=False,
     )
     bpy.types.Scene.movieclip_selected = bpy.props.PointerProperty(
-        name="", 
+        name="",
         type=bpy.types.MovieClip,
         description="Select a Movie Clip to use as the camera background",
     )
     bpy.types.Scene.merged_camera_name_custom = bpy.props.StringProperty(
         name="Custom Name",
-        description="Custom name for the merged camera if not using input sequence name", # Description updated
+        description="Custom name for the merged camera if not using input sequence name",
         default="MergedCamera",
     )
     bpy.types.Scene.merged_camera_name_use_derived = bpy.props.BoolProperty(
-        name="Input sequence name", # Label changed
-        description="If checked, the merged camera name will be derived from the input camera sequence's base name. Otherwise, the custom name below is used.", # Description updated
+        name="Input sequence name",
+        description="If checked, the merged camera name will be derived from the input camera sequence's base name. Otherwise, the custom name below is used.",
         default=False,
     )
 
@@ -296,7 +293,6 @@ def unregister():
     bpy.utils.unregister_class(MergeSelectedCamerasOperator)
     bpy.utils.unregister_class(SetBackgroundOperator)
     bpy.utils.unregister_class(MergeCamerasPanel)
-
     del bpy.types.Scene.delete_original_cameras
     del bpy.types.Scene.process_only_selected_cameras
     del bpy.types.Scene.movieclip_selected
