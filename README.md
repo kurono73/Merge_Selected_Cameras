@@ -49,8 +49,8 @@ In Blender, navigate to the addon panel:
 - Use **Set as Background** to assign a Movie Clip to the created camera.
 - Features:
     - Render resolution is automatically adjusted to match the Movie Clip.
-    - Camera start frame is synced with the Movie Clip’s start frame.
-    - Sensor size and focal length are applied based on the Movie Clip’s metadata (zoom lenses use the start frame value).
+    - Synchronize the start frame of the selected Movie Clip with the camera's start frame.
+    - Set the sensor size and focal length of the selected Movie Clip to match the camera's values. If the focal length is animated (zoom), the value at the start frame will be used.
 
 ---
 
