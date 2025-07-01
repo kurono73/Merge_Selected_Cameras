@@ -8,16 +8,8 @@ def natural_sort_key(s, _nsre=re.compile('([0-9]+)')):
     """Provides a key for natural sorting of strings (e.g., 'item1', 'item2', 'item10')."""
     return [int(text) if text.isdigit() else text.lower() for text in _nsre.split(s)]
 
-class MergeSelectedCamerasOperator(bpy.types.Operator):
-    """
-    Merges multiple cameras into a single animated camera.
-    It can process either selected cameras or auto-detect a sequence from the active camera's name.
-    Keyframes are created for location, rotation, and optionally for lens and shift properties.
-    """
-    bl_idname = "camera.merge_selected_cameras"
-    bl_label = "Merge Cameras"
-    bl_options = {'REGISTER', 'UNDO'}
-
+class MergeCamerasSettings(bpy.types.PropertyGroup):
+    """Stores all the settings for the Merge Cameras addon."""
     delete_original_cameras: bpy.props.BoolProperty(
         name="Delete Original Cameras",
         description="Remove original cameras after merging",
@@ -25,7 +17,7 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
     )
     process_only_selected_cameras: bpy.props.BoolProperty(
         name="Selected cameras only",
-        description="Process only manually selected cameras; if unchecked, auto-detect cameras by name from the active camera",
+        description="If checked, process only manually selected cameras. If unchecked, auto-detect cameras by name from the active camera",
         default=False,
     )
     camera_name_custom: bpy.props.StringProperty(
@@ -38,21 +30,37 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
         description="If checked, the merged camera name will be derived from the input camera sequence's base name. Otherwise, the custom name below is used.",
         default=False,
     )
+    movieclip_selected: bpy.props.PointerProperty(
+        name="",
+        type=bpy.types.MovieClip,
+        description="Select a Movie Clip to use as the camera background",
+    )
 
-    def _determine_final_camera_name(self, sorted_cameras, auto_detect_match):
+class MergeSelectedCamerasOperator(bpy.types.Operator):
+    """
+    Merges multiple cameras into a single animated camera.
+    It can process either selected cameras or auto-detect a sequence from the active camera's name.
+    Keyframes are created for location, rotation, and optionally for lens and shift properties.
+    """
+    bl_idname = "camera.merge_selected_cameras"
+    bl_label = "Merge Cameras"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def _determine_final_camera_name(self, settings, sorted_cameras, auto_detect_match):
         """
         Determines the name for the merged camera based on operator properties.
 
         Args:
+            settings (MergeCamerasSettings): The addon settings.
             sorted_cameras (list): The list of camera objects to be merged.
             auto_detect_match (re.Match or None): The regex match object from auto-detection.
 
         Returns:
             str: The final name for the new camera.
         """
-        if self.camera_name_use_derived:
+        if settings.camera_name_use_derived:
             base_name = ""
-            if self.process_only_selected_cameras:
+            if settings.process_only_selected_cameras:
                 if sorted_cameras:
                     match = re.match(r'(.*?)(\d+)(\.\w+)?$', sorted_cameras[0].name)
                     if match:
@@ -60,22 +68,23 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
             elif auto_detect_match:
                 base_name = auto_detect_match.group(1)
 
-            cleaned_name = base_name.rstrip(' _.-')
+            # Use regex to remove trailing separators for a cleaner name
+            cleaned_name = re.sub(r'[ _.-]+$', '', base_name)
             if not cleaned_name.strip():
                 self.report({'WARNING'}, "Could not derive a base name. Using default 'MergedCamera'.")
                 return "MergedCamera"
             return cleaned_name
         else:
-            if not self.camera_name_custom.strip():
+            if not settings.camera_name_custom.strip():
                 self.report({'WARNING'}, "Custom name is blank. Using default 'MergedCamera'.")
                 return "MergedCamera"
-            return self.camera_name_custom
+            return settings.camera_name_custom
 
     @classmethod
     def poll(cls, context):
         """Checks if the operator can run."""
-        scene = context.scene
-        if scene.process_only_selected_cameras:
+        settings = context.scene.merge_camera_settings
+        if settings.process_only_selected_cameras:
             return any(obj.type == 'CAMERA' for obj in context.selected_objects)
         else:
             active_obj = context.view_layer.objects.active
@@ -84,9 +93,10 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
     def execute(self, context):
         """Executes the camera merging process."""
         scene = context.scene
+        settings = scene.merge_camera_settings
         base_name_match_for_auto_detect = None
 
-        if self.process_only_selected_cameras:
+        if settings.process_only_selected_cameras:
             selected_objects = context.selected_objects
             camera_objects = [obj for obj in selected_objects if obj.type == 'CAMERA']
         else:
@@ -99,8 +109,9 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
                 self.report({'WARNING'}, "Active camera name does not match expected pattern for auto-detection (e.g., 'cam1').")
                 return {'CANCELLED'}
             base_name_for_glob = base_name_match_for_auto_detect.group(1)
+            # Iterate over the current scene's objects instead of all objects
             camera_objects = [
-                obj for obj in bpy.data.objects
+                obj for obj in context.scene.objects
                 if obj.type == 'CAMERA' and re.match(fr'{re.escape(base_name_for_glob)}\d+(\.\w+)?$', obj.name)
             ]
 
@@ -110,11 +121,13 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
 
         sorted_camera_objects = sorted(camera_objects, key=lambda cam: natural_sort_key(cam.name))
 
-        final_camera_name = self._determine_final_camera_name(sorted_camera_objects, base_name_match_for_auto_detect)
+        final_camera_name = self._determine_final_camera_name(settings, sorted_camera_objects, base_name_match_for_auto_detect)
 
         bpy.ops.object.camera_add(location=(0, 0, 0))
         animated_camera = context.object
         animated_camera.name = final_camera_name
+        # Add a custom property to easily identify the merged camera later
+        animated_camera["is_merged_camera"] = True
 
         first_camera = sorted_camera_objects[0]
         animated_camera.data.sensor_width = first_camera.data.sensor_width
@@ -158,33 +171,30 @@ class MergeSelectedCamerasOperator(bpy.types.Operator):
 
             clear_camera_data_keyframes(camera)
 
-            # Rebuild lens keyframes only if values are not constant
             if len(lens_vals) > 1 and not all(isclose(v, lens_vals[0], abs_tol=1e-4) for v in lens_vals):
                 for frame, value in zip(frames_list, lens_vals):
                     camera.data.lens = value
                     camera.data.keyframe_insert(data_path="lens", frame=frame)
             else:
-                camera.data.lens = lens_vals[0]
+                camera.data.lens = lens_vals[0] if lens_vals else 50.0
 
-            # Rebuild shift_x keyframes only if values are not constant
             if len(shift_x_vals) > 1 and not all(isclose(v, shift_x_vals[0], abs_tol=1e-4) for v in shift_x_vals):
                 for frame, value in zip(frames_list, shift_x_vals):
                     camera.data.shift_x = value
                     camera.data.keyframe_insert(data_path="shift_x", frame=frame)
             else:
-                camera.data.shift_x = shift_x_vals[0]
+                camera.data.shift_x = shift_x_vals[0] if shift_x_vals else 0.0
 
-            # Rebuild shift_y keyframes only if values are not constant
             if len(shift_y_vals) > 1 and not all(isclose(v, shift_y_vals[0], abs_tol=1e-4) for v in shift_y_vals):
                 for frame, value in zip(frames_list, shift_y_vals):
                     camera.data.shift_y = value
                     camera.data.keyframe_insert(data_path="shift_y", frame=frame)
             else:
-                camera.data.shift_y = shift_y_vals[0]
+                camera.data.shift_y = shift_y_vals[0] if shift_y_vals else 0.0
 
         rebuild_keyframes_if_needed(animated_camera, frames, lens_values, shift_x_values, shift_y_values)
 
-        if self.delete_original_cameras:
+        if settings.delete_original_cameras:
             bpy.data.batch_remove(sorted_camera_objects)
 
         self.report({'INFO'}, f"Cameras merged into '{animated_camera.name}'.")
@@ -202,28 +212,26 @@ class SetBackgroundOperator(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         """Checks if a movie clip is selected in the panel."""
-        return context.scene.movieclip_selected is not None
+        return context.scene.merge_camera_settings.movieclip_selected is not None
 
     def execute(self, context):
         """Executes the background setting process."""
         scene = context.scene
-        clip = scene.movieclip_selected
+        settings = scene.merge_camera_settings
+        clip = settings.movieclip_selected
         active_camera = context.view_layer.objects.active
 
         if not active_camera or active_camera.type != 'CAMERA':
             found_camera = None
-            # Attempt to find the camera created by this addon
-            custom_name_val = scene.merged_camera_name_custom
-            derive_name_val = scene.merged_camera_name_use_derived
-            potential_active_name = custom_name_val if not derive_name_val and custom_name_val.strip() else "MergedCamera"
-
-            if potential_active_name in bpy.data.objects and bpy.data.objects[potential_active_name].type == 'CAMERA':
-                found_camera = bpy.data.objects[potential_active_name]
-            elif "MergedCamera" in bpy.data.objects and bpy.data.objects["MergedCamera"].type == 'CAMERA':
-                found_camera = bpy.data.objects["MergedCamera"]
-            else:
-                # As a last resort, find any camera
-                for obj in bpy.data.objects:
+            # First, try to find the camera created by this addon using its custom property
+            for obj in context.scene.objects:
+                if obj.type == 'CAMERA' and obj.get("is_merged_camera"):
+                    found_camera = obj
+                    break
+            
+            # If not found, fall back to finding any camera in the scene
+            if not found_camera:
+                for obj in context.scene.objects:
                     if obj.type == 'CAMERA':
                         found_camera = obj
                         break
@@ -243,17 +251,15 @@ class SetBackgroundOperator(bpy.types.Operator):
         original_frame = scene.frame_current
         scene.frame_set(scene.frame_start)
 
-        # Set camera background
         active_camera.data.show_background_images = True
-        for bg_img_idx in range(len(active_camera.data.background_images) - 1, -1, -1):
-            active_camera.data.background_images.remove(active_camera.data.background_images[bg_img_idx])
+        for bg_img in list(active_camera.data.background_images):
+            active_camera.data.background_images.remove(bg_img)
         bg = active_camera.data.background_images.new()
         bg.source = 'MOVIE_CLIP'
         bg.clip = clip
         bg.alpha = 1.0
         clip.frame_start = scene.frame_start
 
-        # Sync camera and render settings to clip
         if clip.tracking and clip.tracking.camera:
             clip.tracking.camera.sensor_width = active_camera.data.sensor_width
             clip.tracking.camera.focal_length = active_camera.data.lens
@@ -280,80 +286,55 @@ class MergeCamerasPanel(bpy.types.Panel):
     def draw(self, context):
         """Draws the UI panel."""
         layout = self.layout
-        scene = context.scene
+        # Get settings from the PropertyGroup
+        settings = context.scene.merge_camera_settings
 
-        # Section 1: Merge Cameras
         main_merge_box = layout.box()
         main_merge_box.label(text="1. Merge Sequential Cameras")
 
         source_options_box = main_merge_box.box()
         source_options_box.label(text="Options:")
-        source_options_box.prop(scene, "process_only_selected_cameras")
-        source_options_box.prop(scene, "delete_original_cameras")
+        source_options_box.prop(settings, "process_only_selected_cameras")
+        source_options_box.prop(settings, "delete_original_cameras")
 
         naming_options_box = main_merge_box.box()
         naming_options_box.label(text="Camera Naming:")
-        naming_options_box.prop(scene, "merged_camera_name_use_derived")
+        naming_options_box.prop(settings, "camera_name_use_derived")
         row = naming_options_box.row(align=True)
-        row.active = not scene.merged_camera_name_use_derived
-        row.prop(scene, "merged_camera_name_custom", text="Name")
+        row.active = not settings.camera_name_use_derived
+        row.prop(settings, "camera_name_custom", text="Name")
 
-        op_merge = main_merge_box.operator(MergeSelectedCamerasOperator.bl_idname, icon='OUTLINER_OB_CAMERA')
-        # Pass scene properties to the operator
-        op_merge.delete_original_cameras = scene.delete_original_cameras
-        op_merge.process_only_selected_cameras = scene.process_only_selected_cameras
-        op_merge.camera_name_custom = scene.merged_camera_name_custom
-        op_merge.camera_name_use_derived = scene.merged_camera_name_use_derived
+        # The operator automatically gets its properties from the context,
+        # so we don't need to pass them manually anymore.
+        # The operator will read the settings from the PropertyGroup itself.
+        main_merge_box.operator(MergeSelectedCamerasOperator.bl_idname, icon='OUTLINER_OB_CAMERA')
 
         layout.separator()
 
-        # Section 2: Set Background
         box_bg = layout.box()
         box_bg.label(text="2. Background Image Setup")
-        box_bg.prop(scene, "movieclip_selected", text="")
+        box_bg.prop(settings, "movieclip_selected", text="")
         box_bg.operator(SetBackgroundOperator.bl_idname)
 
 def register():
     """Registers all addon classes and properties."""
+    bpy.utils.register_class(MergeCamerasSettings)
     bpy.utils.register_class(MergeSelectedCamerasOperator)
     bpy.utils.register_class(SetBackgroundOperator)
     bpy.utils.register_class(MergeCamerasPanel)
-    bpy.types.Scene.delete_original_cameras = bpy.props.BoolProperty(
-        name="Delete Original Cameras",
-        description="Remove original cameras after merging",
-        default=True,
-    )
-    bpy.types.Scene.process_only_selected_cameras = bpy.props.BoolProperty(
-        name="Selected cameras only",
-        description="If checked, process only manually selected cameras. If unchecked, auto-detect cameras by name from the active camera",
-        default=False,
-    )
-    bpy.types.Scene.movieclip_selected = bpy.props.PointerProperty(
-        name="",
-        type=bpy.types.MovieClip,
-        description="Select a Movie Clip to use as the camera background",
-    )
-    bpy.types.Scene.merged_camera_name_custom = bpy.props.StringProperty(
-        name="Custom Name",
-        description="Custom name for the merged camera if not using input sequence name",
-        default="MergedCamera",
-    )
-    bpy.types.Scene.merged_camera_name_use_derived = bpy.props.BoolProperty(
-        name="Input sequence name",
-        description="If checked, the merged camera name will be derived from the input camera sequence's base name. Otherwise, the custom name below is used.",
-        default=False,
-    )
+    
+    # Add the PropertyGroup to the Scene type
+    bpy.types.Scene.merge_camera_settings = bpy.props.PointerProperty(type=MergeCamerasSettings)
 
 def unregister():
     """Unregisters all addon classes and properties."""
-    bpy.utils.unregister_class(MergeSelectedCamerasOperator)
-    bpy.utils.unregister_class(SetBackgroundOperator)
+    # Important to unregister in reverse order
+    del bpy.types.Scene.merge_camera_settings
+    
     bpy.utils.unregister_class(MergeCamerasPanel)
-    del bpy.types.Scene.delete_original_cameras
-    del bpy.types.Scene.process_only_selected_cameras
-    del bpy.types.Scene.movieclip_selected
-    del bpy.types.Scene.merged_camera_name_custom
-    del bpy.types.Scene.merged_camera_name_use_derived
+    bpy.utils.unregister_class(SetBackgroundOperator)
+    bpy.utils.unregister_class(MergeSelectedCamerasOperator)
+    bpy.utils.unregister_class(MergeCamerasSettings)
 
 if __name__ == "__main__":
     register()

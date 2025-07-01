@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "Merge_selected_cameras"
-version = "1.0.1"
+version = "1.1.0"
 name = "Merge Selected Cameras"
 tagline = "Create one animated camera from your photogrammetry sequence"
 maintainer = "Naoki Korematsu" 
