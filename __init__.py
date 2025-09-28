@@ -335,6 +335,3 @@ def unregister():
     bpy.utils.unregister_class(SetBackgroundOperator)
     bpy.utils.unregister_class(MergeSelectedCamerasOperator)
     bpy.utils.unregister_class(MergeCamerasSettings)
-
-if __name__ == "__main__":
-    register()
